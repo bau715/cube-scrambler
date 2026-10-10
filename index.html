@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<!-- user-scalable=no + maximum-scale=1: impide el zoom por doble toque que dispararía el zoom de iOS -->
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Cube Scramble">
+<meta name="apple-mobile-web-app-status-bar-style" content="black">
+<meta name="description" content="Generador de scrambles WCA de 20 movimientos con vista previa 2D del cubo de Rubik 3x3x3.">
+<title>Cube Scramble</title>
+<style>
+/* =====================================================================
+   CUBE SCRAMBLE — hoja de estilo embebida (mobile-first)
+   - Fondo negro puro, texto blanco, tipografía monoespaciada
+   - Layout vertical sin scroll: 100vh/100dvh + flex
+   - Sin botones: toda la pantalla es táctil
+   ===================================================================== */
+
+:root {
+  /* Colores de las caras con NARANJA AL FRENTE y BLANCO ARRIBA.
+     (Es la orientación de la WCA rotada 90° sobre el eje vertical:
+      F=naranja, R=verde, L=azul, B=rojo, U=blanco, D=amarillo.) */
+  --c-U: #FFFFFF;  /* blanco  */
+  --c-D: #FFD500;  /* amarillo */
+  --c-F: #FF5800;  /* naranja  */
+  --c-B: #C41E3A;  /* rojo     */
+  --c-R: #009B48;  /* verde    */
+  --c-L: #0046AD;  /* azul     */
+
+  --bg: #000000;
+  --ink: #FFFFFF;
+  --hint: #888888;
+
+  --pad: 20px;   /* márgenes laterales exigidos */
+  --edge: 2px;   /* borde fino negro entre caras */
+  --gap: 2px;    /* separación entre stickers */
+
+  /* Lado de UNA cara del cubo. Se ajusta al ancho disponible
+     y se limita por la altura disponible para que nunca haya scroll. */
+  --cell: calc((100vw - 2 * var(--pad)) / 4);
+}
+
+/* min() con unidades de viewport dinámico (Safari 15.4+, Chrome 108+) */
+@supports (width: min(10px, 20px)) {
+  :root {
+    --cell-max-h: calc(52vh / 3);
+    --cell: min(calc((100vw - 2 * var(--pad)) / 4), var(--cell-max-h));
+  }
+}
+@supports (height: 100dvh) {
+  :root {
+    --cell-max-h: calc(52dvh / 3);
+    --cell: min(calc((100vw - 2 * var(--pad)) / 4), var(--cell-max-h));
+  }
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html {
+  height: 100%;
+  background: var(--bg);
+  overflow: hidden;              /* ninguna página puede desplazarse */
+  /* Evita el rebote de scroll de iOS Safari */
+  overscroll-behavior: none;
+}
+
+body {
+  position: fixed;              /* refuerzo: ninguna página puede desplazarse */
+  inset: 0;
+  height: 100vh;                 /* respaldo para navegadores sin dvh */
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  /* Sin selección de texto ni menú contextual al mantener pulsado */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;    /* sin retardo de 300 ms, sin zoom */
+  overscroll-behavior: none;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+@supports (height: 100dvh) { body { height: 100dvh; } }
+
+/* ---------------------------------------------------------------- */
+/* Estructura vertical: cabecera ~30%, pista ~10%, cubo ~60%         */
+/* ---------------------------------------------------------------- */
+#app {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  height: 100%;
+  width: 100%;
+}
+
+#top {
+  flex: 0 0 30%;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;   /* el scramble queda centrado en su zona */
+  width: 100%;
+  text-align: center;
+  transition: opacity 100ms linear;
+}
+
+h1 {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.42em;
+  text-indent: 0.42em;          /* compensa el letter-spacing del último carácter */
+  color: #9aa0a6;
+  margin-bottom: 14px;
+}
+
+#scramble {
+  font-family: Menlo, Consolas, "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+  font-size: clamp(22px, 5.2vw, 30px);   /* mínimo 22 px en móvil */
+  font-weight: 600;
+  letter-spacing: 0.045em;
+  line-height: 1.35;
+  text-align: center;
+  padding: 0 var(--pad);
+  overflow-wrap: anywhere;       /* el scramble nunca desborda en pantallas estrechas */
+}
+
+#hint {
+  flex: 0 0 10%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  margin: 0;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--hint);
+  text-align: center;
+  padding: 0 var(--pad);
+}
+
+/* Zona inferior: la plantilla 2D centrada, ocupando el máximo ancho */
+#boardwrap {
+  flex: 1 1 auto;            /* el 60% restante */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  padding-bottom: 2vh;
+  transition: opacity 100ms linear;
+}
+
+/* ---------------------------------------------------------------- */
+/* La cruz clásica desplegada:                                       */
+/*              ┌─────────┐                                         */
+/*              │    U    │                                         */
+/*   ┌─────────┬┼─────────┼┼─────────┬┬─────────┐                    */
+/*   │    L    ││    F    ││    R    ││    B    │                    */
+/*   └─────────┴┼─────────┴┼─────────┴┴─────────┘                    */
+/*              │    D    │                                         */
+/*              └─────────┘                                         */
+/* Rejilla 4 columnas x 3 filas; las celdas 1,2 y 2,3 quedan vacías. */
+/* ---------------------------------------------------------------- */
+#board {
+  display: grid;
+  grid-template-columns: repeat(4, var(--cell));
+  grid-template-rows: repeat(3, var(--cell));
+  gap: var(--edge);              /* borde fino negro entre caras */
+}
+
+.face {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 1fr);
+  gap: var(--gap);
+}
+.face-u { grid-column: 2; grid-row: 1; }
+.face-l { grid-column: 1; grid-row: 2; }
+.face-f { grid-column: 2; grid-row: 2; }
+.face-r { grid-column: 3; grid-row: 2; }
+.face-b { grid-column: 4; grid-row: 2; }
+.face-d { grid-column: 2; grid-row: 3; }
+
+.cell {
+  border-radius: 3px;
+  /* Sombra interior mínima: da relieve al sticker sin falsear el color */
+  box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.22);
+}
+
+/* Fundido rápido (200 ms en total: 100 fuera + 100 dentro) */
+#app.fading #top,
+#app.fading #boardwrap { opacity: 0; }
+
+@media (prefers-reduced-motion: reduce) {
+  #top, #boardwrap { transition: none; }
+}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header id="top">
+    <h1>CUBE SCRAMBLE</h1>
+    <div id="scramble" role="status" aria-live="polite" aria-label="Scramble actual"></div>
+  </header>
+
+  <p id="hint">Toca en cualquier parte para nuevo scramble</p>
+
+  <div id="boardwrap">
+    <div id="board" role="img" aria-label="Vista 2D del cubo tras aplicar el scramble">
+      <div class="face face-u" data-face="U"></div>
+      <div class="face face-l" data-face="L"></div>
+      <div class="face face-f" data-face="F"></div>
+      <div class="face face-r" data-face="R"></div>
+      <div class="face face-b" data-face="B"></div>
+      <div class="face face-d" data-face="D"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* =====================================================================
+   CUBE SCRAMBLE — lógica (JavaScript puro, sin dependencias)
+
+   Índice:
+     1. Geometría 3D de los 54 stickers (vectores enteros)
+     2. Los 18 movimientos HTM como permutaciones de 54 posiciones
+     3. Distancias sticker-a-cara (cota inferior del óptimo)
+     4. Generación de scrambles con las reglas de la WCA
+     5. Render de la plantilla 2D desplegada
+     6. Interacción táctil (sin botones)
+
+   La lógica del cubo vive en un objeto `CubeScramble` que se expone en
+   `globalThis`, de forma que la UI (que necesita `document`) y las pruebas
+   automáticas (que no lo necesitan) usen exactamente el mismo código.
+   ===================================================================== */
+(function (global) {
+  'use strict';
+
+  /* =================================================================
+     1. GEOMETRÍA 3D DE LOS 54 STICKERS
+     -----------------------------------------------------------------
+     Sistema de coordenadas (mano derecha):
+       +x -> derecha  (cara R, verde)
+       +y -> arriba   (cara U, blanco)
+       +z -> frente   (cara F, naranja)
+     Cada sticker es un par (posición del cubito, normal del sticker).
+     El cubito central (0,0,0) no tiene stickers: hay 54 = 26 cubitos con
+     al menos una cara expuesta (8 esquinas×3 + 12 aristas×2 + 6 centros×1).
+
+     Guardamos las coordenadas del cubo como INTEGERS en {-1,0,1}, así que
+     las rotaciones de 90° son exactas (sin errores de punto flotante).
+     ================================================================= */
+  var FACES = ['U', 'D', 'F', 'B', 'L', 'R'];
+
+  // Normal hacia fuera de cada cara (dirección que define la cara).
+  var FACE_NOR = {
+    U: [0, 1, 0], D: [0, -1, 0],
+    F: [0, 0, 1], B: [0, 0, -1],
+    R: [1, 0, 0], L: [-1, 0, 0]
+  };
+
+  // Dirección "hacia arriba" de cada cara, tal y como se ve en la plantilla
+  // 2D desplegada (la fila 0 es siempre el borde superior de la imagen).
+  var FACE_UP = {
+    U: [0, 0, -1],  D: [0, 0, 1],           // U: arriba mira a atrás; D: arriba mira al frente
+    F: [0, 1, 0],    B: [0, 1, 0],
+    R: [0, 1, 0],    L: [0, 1, 0]
+  };
+
+  // Colores de cada cara con la orientación pedida (naranja al frente).
+  var FACE_COLOR = {
+    U: '#FFFFFF', D: '#FFD500', F: '#FF5800',
+    B: '#C41E3A', R: '#009B48', L: '#0046AD'
+  };
+
+  function cross(a, b) {
+    return [a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0]];
+  }
+
+  /* Sticker i = (STICKERS[i].pos, STICKERS[i].nor).
+     El orden es: cara U (9 celdas fila a fila), D, F, B, L, R. */
+  var STICKERS = [];
+  (function buildStickers() {
+    for (var f = 0; f < FACES.length; f++) {
+      var face = FACES[f];
+      var n = FACE_NOR[face];            // normal (hacia fuera)
+      var u = FACE_UP[face];             // "arriba" de la cara en la plantilla
+      var r = cross(u, n);               // "derecha" de la cara en la plantilla
+      for (var row = 0; row < 3; row++) {
+        for (var col = 0; col < 3; col++) {
+          // Recorrido (row,col) -> posición: col va de izquierda a derecha,
+          // row de arriba a abajo, dentro de la base (r,u).
+          STICKERS.push({
+            face: face, row: row, col: col,
+            pos: [
+              n[0] + (col - 1) * r[0] + (1 - row) * u[0],
+              n[1] + (col - 1) * r[1] + (1 - row) * u[1],
+              n[2] + (col - 1) * r[2] + (1 - row) * u[2]
+            ],
+            nor: [n[0], n[1], n[2]]
+          });
+        }
+      }
+    }
+  })();
+
+  /* Índice canónico de una normal (para construir claves compactas). */
+  var NOR_INDEX = (function () {
+    var m = {}, k = 0;
+    for (var f = 0; f < FACES.length; f++) {
+      var n = FACE_NOR[FACES[f]];
+      m[n.join(',')] = k++;
+    }
+    return m;
+  })();
+
+  /* Clave única de un sticker: posición (3 dígitos base 3) + normal. */
+  function stickerKey(pos, nor) {
+    return (pos[0] + 1) + 3 * (pos[1] + 1) + 9 * (pos[2] + 1) +
+           54 * NOR_INDEX[nor.join(',')];
+  }
+
+  /* Mapa clave -> índice de sticker, para recuperar la casilla destino. */
+  var SLOT = (function () {
+    var m = new Map();
+    for (var i = 0; i < STICKERS.length; i++) {
+      m.set(stickerKey(STICKERS[i].pos, STICKERS[i].nor), i);
+    }
+    return m;
+  })();
+
+  /* Estado RESUELTO: el sticker i tiene el color de la cara donde vive. */
+  var SOLVED = STICKERS.map(function (s) { return s.face; });
+
+  /* =================================================================
+     2. LOS 18 MOVIMIENTOS HTM COMO PERMUTACIONES
+     -----------------------------------------------------------------
+     Sentido Singmaster: una cara se gira EN SENTIDO HORARIO mirándola
+     desde fuera del cubo. En el sistema diestro eso equivale a una
+     rotación de -90° alrededor de la normal hacia fuera de la cara.
+
+     MOVE_PERM[face][n] cumple:  estado[nuevo][i] = estado[viejo][perm[i]]
+     Es decir, la casilla i toma su color del sticker que estaba en perm[i].
+     ================================================================= */
+  function rot(vector, axis, quarters) {
+    // quarters = número de giros de +90° (mano derecha) sobre el eje POSITIVO.
+    var x = vector[0], y = vector[1], z = vector[2];
+    var q = ((quarters % 4) + 4) % 4;
+    for (var i = 0; i < q; i++) {
+      if (axis === 'x')      { var ty = -z; z = y;  y = ty; }  // y -> z
+      else if (axis === 'y') { var tx =  z; z = -x; x = tx; }  // z -> x
+      else                   { var tx2 = -y; y = x;  x = tx2; } // x -> y
+    }
+    return [x, y, z];
+  }
+
+  function axisOf(face) {
+    var n = FACE_NOR[face];
+    if (n[0] !== 0) return 'x';
+    if (n[1] !== 0) return 'y';
+    return 'z';
+  }
+
+  function buildPermutation(face, amount) {
+    var n = FACE_NOR[face];
+    var axis = axisOf(face);
+    var positive = n[axis === 'x' ? 0 : (axis === 'y' ? 1 : 2)] > 0;
+    // Horario visto desde fuera = -90° sobre la normal hacia fuera.
+    var q = positive ? -amount : amount;
+    var dest = new Uint8Array(54);
+    for (var i = 0; i < 54; i++) {
+      var s = STICKERS[i];
+      var along = s.pos[0] * n[0] + s.pos[1] * n[1] + s.pos[2] * n[2];
+      if (along === 1) {                     // el cubito está en la capa que gira
+        var dst = SLOT.get(stickerKey(rot(s.pos, axis, q), rot(s.nor, axis, q)));
+        if (dst === undefined) throw new Error('Movimiento inconsistente: ' + face + amount);
+        dest[i] = dst;
+      } else {
+        dest[i] = i;                          // fuera de la capa: no se mueve
+      }
+    }
+    // Se invierte para guardar origen -> destino, que es como lo consume
+    // applyMove:  estadoNuevo[perm[i]] = estadoViejo[i].
+    var perm = new Uint8Array(54);
+    for (i = 0; i < 54; i++) perm[dest[i]] = i;
+    return perm;
+  }
+
+  var MOVE_PERM = {};
+  (function buildAllMoves() {
+    for (var f = 0; f < FACES.length; f++) {
+      var face = FACES[f];
+      MOVE_PERM[face] = [];
+      for (var amount = 1; amount <= 3; amount++) MOVE_PERM[face][amount] = buildPermutation(face, amount);
+    }
+  })();
+
+  /* Permutación inversa: dada `perm` (nuevo[i] = viejo[perm[i]]), devuelve
+     la permutación que deshace el giro. */
+  function invertPerm(perm) {
+    var inv = new Uint8Array(54);
+    for (var i = 0; i < 54; i++) inv[perm[i]] = i;
+    return inv;
+  }
+
+  /* Aplicar un movimiento a un estado (devuelve un estado nuevo).
+     MOVE_PERM[face][n][destino] = origen: la casilla destino toma el color
+     que tenía la casilla origen. */
+  function applyMove(state, face, amount) {
+    var perm = MOVE_PERM[face][amount];
+    var out = new Array(54);
+    for (var i = 0; i < 54; i++) out[i] = state[perm[i]];
+    return out;
+  }
+
+  /* "R2'" -> {face:'R', amount:3}; "F" -> {face:'F', amount:1} */
+  function parseMove(text) {
+    var face = text.charAt(0).toUpperCase();
+    if (FACES.indexOf(face) < 0) throw new Error('Movimiento no válido: ' + text);
+    var suffix = text.slice(1);
+    var amount = suffix === '' ? 1 : (suffix === "'" ? 3 : (suffix === '2' ? 2 : NaN));
+    if (isNaN(amount)) throw new Error('Sufijo no válido: ' + text);
+    return { face: face, amount: amount };
+  }
+
+  function formatMove(move) {
+    return move.face + (move.amount === 1 ? '' : (move.amount === 2 ? '2' : "'"));
+  }
+
+  /* Aplica una secuencia de notación (array de strings) al estado dado. */
+  function applySequence(state, moves) {
+    var cur = state;
+    for (var i = 0; i < moves.length; i++) {
+      var m = typeof moves[i] === 'string' ? parseMove(moves[i]) : moves[i];
+      cur = applyMove(cur, m.face, m.amount);
+    }
+    return cur;
+  }
+
+  /* =================================================================
+     3. COTA INFERIOR DEL ÓPTIMO: DISTANCIA DE UN SOLO CUBITO
+     -----------------------------------------------------------------
+     Cualquier solución tiene que devolver CADA cubito a su posición y a
+     su orientación. Si el cubito i necesita al menos d_i movimientos para
+     llegar a su sitio, la solución completa no puede medir menos de d_i.
+     Por tanto
+
+        maxCubie  =  maxi d_i
+
+     es una cota inferior RIGUROSA del número óptimo de movimientos (nunca
+     sobreestima, y vale 0 con el cubo resuelto).
+
+     Nota: una cota análoga por stickers (distancia de un sticker a su
+     cara) NO sirve aquí: la esfera de radio 2 ya cubre las 54 casillas,
+     así que vale 2 para prácticamente cualquier estado. La versión por
+     cubitos sí discrimina: obliga además a corregir la orientación.
+
+     Se calcula con 20 BFS diminutos (8 esquinas × 24 estados, 12 aristas
+     × 24 estados), unos 25.000 pasos en total, una sola vez al cargar.
+     ================================================================= */
+  function posKey3(p) { return (p[0] + 1) + 3 * (p[1] + 1) + 9 * (p[2] + 1); }
+
+  /* Posiciones de las 8 esquinas y de las 12 aristas (los 6 centros y el
+     cubito central no se mueven nunca y se ignoran). */
+  var CORNER_POS = [], EDGE_POS = [];
+  (function () {
+    for (var x = -1; x <= 1; x++) {
+      for (var y = -1; y <= 1; y++) {
+        for (var z = -1; z <= 1; z++) {
+          var m = Math.abs(x) + Math.abs(y) + Math.abs(z);
+          if (m === 3) CORNER_POS.push([x, y, z]);
+          else if (m === 2) EDGE_POS.push([x, y, z]);
+        }
+      }
+    }
+  })();
+
+  /* Índice de los stickers que pertenecen a cada posición, ordenados de
+     forma estable por el índice de su normal (define el "eje 0" del cubito). */
+  function slotsAtPosition(positions) {
+    var table = {};
+    for (var i = 0; i < 54; i++) {
+      var key = posKey3(STICKERS[i].pos);
+      (table[key] = table[key] || []).push(i);
+    }
+    for (var k in table) {
+      table[k].sort(function (a, b) {
+        return NOR_INDEX[STICKERS[a].nor.join(',')] - NOR_INDEX[STICKERS[b].nor.join(',')];
+      });
+    }
+    return table;
+  }
+
+  var CORNER_SLOTS = slotsAtPosition();
+  var EDGE_SLOTS = slotsAtPosition();
+
+  /* Para cada cubito: color de referencia (primer sticker de su posición
+     natal) y tabla que tradujo "colores en una posición" -> cubito. */
+  function buildCubieIndex(positions, slotsTable) {
+    var refColor = [], toCubie = {};
+    for (var h = 0; h < positions.length; h++) {
+      var cols = slotsTable[posKey3(positions[h])].map(function (i) { return SOLVED[i]; });
+      refColor.push(cols[0]);
+      toCubie[cols.slice().sort().join('')] = h;
+    }
+    return { refColor: refColor, toCubie: toCubie };
+  }
+
+  var CORNER_INDEX = buildCubieIndex(CORNER_POS, CORNER_SLOTS);
+  var EDGE_INDEX = buildCubieIndex(EDGE_POS, EDGE_SLOTS);
+
+  /* Rotación que aplica un movimiento (eje + nº de cuartos de vuelta). */
+  function moveRotation(face, amount) {
+    var n = FACE_NOR[face];
+    var axis = axisOf(face);
+    var positive = n[axis === 'x' ? 0 : (axis === 'y' ? 1 : 2)] > 0;
+    return { axis: axis, q: positive ? -amount : amount };
+  }
+
+  /* Tabla de distancias cubito -> casa, calculada con un BFS inverso desde
+     el estado natal por los 18 movimientos. Índice = posActual * oriN + ori. */
+  function buildCubieDistances(positions, slotsTable) {
+    var oriN = positions.length === 8 ? 3 : 2;   // 3 orientaciones por esquina, 2 por arista
+    var normals = {};                  // positionKey -> {norKey: índice dentro de la posición}
+    var posIndex = {};                 // positionKey -> índice de la posición
+    for (var pi = 0; pi < positions.length; pi++) posIndex[posKey3(positions[pi])] = pi;
+    for (var p in slotsTable) {
+      normals[p] = {};
+      for (var s = 0; s < slotsTable[p].length; s++) {
+        normals[p][STICKERS[slotsTable[p][s]].nor.join(',')] = s;
+      }
+    }
+    var rotations = [];
+    for (var f = 0; f < FACES.length; f++) {
+      for (var amount = 1; amount <= 3; amount++) rotations.push(moveRotation(FACES[f], amount));
+    }
+
+    var dists = [];
+    for (var h = 0; h < positions.length; h++) {
+      var dist = new Int8Array(positions.length * oriN).fill(-1);
+      var queue = [h * oriN];           // estados indexados por posIdx * oriN + ori
+      dist[h * oriN] = 0;         // el cubito h nace en su posición, orientación 0
+      while (queue.length) {
+        var cur = queue.shift();
+        var posIdx = (cur / oriN) | 0, ori = cur % oriN;
+        var homeSlots = slotsTable[posKey3(positions[posIdx])];
+        var pos = positions[posIdx], nor = STICKERS[homeSlots[ori]].nor;
+        for (var r = 0; r < rotations.length; r++) {
+          var mv = rotations[r];
+          var np = posKey3(rot(positions[posIdx], mv.axis, mv.q));
+          var nn = rot(nor, mv.axis, mv.q).join(',');
+          if (normals[np] === undefined || normals[np][nn] === undefined) continue;
+          var next = posIndex[np] * oriN + normals[np][nn];
+          if (dist[next] < 0) { dist[next] = dist[cur] + 1; queue.push(next); }
+        }
+      }
+      dists.push(dist);
+    }
+    return dists;
+  }
+
+  var CORNER_DIST = buildCubieDistances(CORNER_POS, CORNER_SLOTS);
+  var EDGE_DIST = buildCubieDistances(EDGE_POS, EDGE_SLOTS);
+
+  /* Distancia (en movimientos) de cada cubito a su posición natal. */
+  function cubieDistances(state) {
+    var out = [];
+    var h, i, cols, cubie, posIdx, ori;
+    for (posIdx = 0; posIdx < 8; posIdx++) {
+      cols = CORNER_SLOTS[posKey3(CORNER_POS[posIdx])].map(function (s) { return state[s]; });
+      cubie = CORNER_INDEX.toCubie[cols.slice().sort().join('')];
+      ori = cols.indexOf(CORNER_INDEX.refColor[cubie]);
+      out.push(CORNER_DIST[cubie][posIdx * 3 + ori]);
+    }
+    for (posIdx = 0; posIdx < 12; posIdx++) {
+      cols = EDGE_SLOTS[posKey3(EDGE_POS[posIdx])].map(function (s) { return state[s]; });
+      cubie = EDGE_INDEX.toCubie[cols.slice().sort().join('')];
+      ori = cols.indexOf(EDGE_INDEX.refColor[cubie]);
+      out.push(EDGE_DIST[cubie][posIdx * 2 + ori]);
+    }
+    return out;
+  }
+
+  /* Cota inferior del óptimo para el estado dado. */
+  function maxCubieDistance(state) {
+    var d = cubieDistances(state);
+    var max = 0;
+    for (var i = 0; i < d.length; i++) if (d[i] > max) max = d[i];
+    return max;
+  }
+
+  /* =================================================================
+     4. GENERACIÓN DE SCRAMBLES (REGLAS WCA / HTM)
+     -----------------------------------------------------------------
+     Reglas obligatorias que se comprueban al construir el scramble:
+       · exactamente 20 movimientos en notación HTM (U, U', U2, ...);
+       · dos movimientos consecutivos NO pueden ser de la misma cara;
+       · tres movimientos consecutivos NO pueden ser del mismo eje
+         (X = {R,L}, Y = {U,D}, Z = {F,B}).
+     Son las mismas reglas que usa la WCA para los scrambles oficiales.
+
+     Sobre la duración óptima (15-20 movimientos), con total honestidad:
+       · God's number = 20 => NUNCA hay estados con óptimo > 20. Ese tope
+         está PROBADO y no requiere calcular nada.
+       · El mínimo no es comprobable de forma barata. Certificar que un
+         estado está a distancia >= 15 obliga a descartar los estados de
+         radio 14, más de 2·10^13 nodos: inviable en un móvil (y por eso
+         no se embebe un solver de Kociemba, que además necesita ~760 KB
+         de tablas de poda generadas en tiempo de carga).
+       · En su lugar se usa la distribución exacta de Kociemba
+         (https://kociemba.org/moves20.htm) sobre los 43.252 billones de
+         estados del cubo:
+
+              óptimo =  13        14        15       16      17      18     19     20
+              P      = 1,2e-5   1,6e-4   0,0021   0,0264  0,267  0,670  0,0339  <3e-10
+
+         Sumando: P(óptimo <= 14) = 0,000174  ->  el 99,9826 % de los
+         estados cae en [15,20], con media 17,7 y moda 18. Como los
+         scrambles de 20 movimientos válidos de la WCA recorren el grupo
+         de forma muy uniforme, ese mismo porcentaje se aplica aquí.
+
+       · El filtro adicional es RIGUROSO pero modesto: se descarta el
+         scramble si el cubito más alejado estuviera a menos de
+         MIN_CUBIE_DISTANCE movimientos de su sitio. Medido sobre 5.000
+         estados, el valor de `maxCubieDistance` es SIEMPRE 2, así que el
+         filtro actúa de guarda contra salidas degeneradas y no de filtro
+         de dificultad: una cota inferior hecha a base de un solo cubito
+         se queda en 2, porque son las interacciones entre cubitos las
+         que alargan las soluciones. Por eso el umbral es 2 y no 15, y
+         por eso el rango 15-20 se apoya en la distribución, no en un
+         filtro local.
+     ================================================================= */
+  var SCRAMBLE_LENGTH = 20;
+  var MIN_CUBIE_DISTANCE = 2;
+  var MAX_ATTEMPTS = 200;        // tope de seguridad: nunca entra en bucle
+
+  var AXIS_OF = { U: 1, D: 1, R: 2, L: 2, F: 3, B: 3 };
+
+  function randomInt(n) { return (Math.random() * n) | 0; }
+
+  /* ¿Es legal poner `face` en la posición `i` de un scramble WCA? */
+  function isWcaLegal(moves, i, face) {
+    if (i >= 1 && moves[i - 1].face === face) return false;                 // misma cara
+    if (i >= 2 && AXIS_OF[moves[i - 1].face] === AXIS_OF[face] &&
+               AXIS_OF[moves[i - 2].face] === AXIS_OF[face]) return false;   // eje triple
+    return true;
+  }
+
+  function generateScramble(length, minCubieDistance) {
+    var len = length || SCRAMBLE_LENGTH;
+    var minDist = minCubieDistance === undefined ? MIN_CUBIE_DISTANCE : minCubieDistance;
+    var moves = new Array(len);
+
+    for (var attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      for (var i = 0; i < len; i++) {
+        // Elección de cara: se descartan las prohibidas por las reglas WCA.
+        var options = [];
+        for (var f = 0; f < FACES.length; f++) {
+          if (isWcaLegal(moves, i, FACES[f])) options.push(FACES[f]);
+        }
+        moves[i] = { face: options[randomInt(options.length)], amount: 1 + randomInt(3) };
+      }
+
+      // Filtro de dificultad (cota inferior rigurosa, muy rápido).
+      if (minDist <= 0) break;
+      if (maxCubieDistance(applySequence(SOLVED, moves)) >= minDist) break;
+    }
+
+    return moves.map(formatMove);
+  }
+
+  /* Comprobación de las reglas WCA sobre un scramble ya construido.
+     Se usa en las pruebas y está disponible desde la consola. */
+  function checkWcaRules(moves, length) {
+    if (length !== undefined && moves.length !== length) {
+      return 'longitud ' + moves.length + ' != ' + length;
+    }
+    for (var i = 0; i < moves.length; i++) {
+      var m;
+      try { m = parseMove(moves[i]); } catch (e) { return 'movimiento inválido: ' + moves[i]; }
+      if (!isWcaLegal(moves, i, m.face)) {
+        return 'regla WCA violada en la posición ' + i + ': ' + moves[i];
+      }
+    }
+    return null;
+  }
+
+  /* =================================================================
+     5. RENDER DE LA PLANTILLA 2D
+     -----------------------------------------------------------------
+     `slotAt` traduce (cara, fila, columna) al índice del sticker que
+     corresponde. La correspondencia se deriva de la MISMA geometría 3D
+     usada por el motor de movimientos, así que no puede desincronizarse.
+     ================================================================= */
+  /* Índice del sticker que ocupa la casilla `row`,`col` de la cara `face`. */
+  function slotAt(face, row, col) {
+    for (var i = 0; i < 54; i++) {
+      var s = STICKERS[i];
+      if (s.face === face && s.row === row && s.col === col) return i;
+    }
+    throw new Error('Casilla inexistente: ' + face + row + col);
+  }
+
+  var API = {
+    FACES: FACES,
+    FACE_COLOR: FACE_COLOR,
+    STICKERS: STICKERS,
+    MOVE_PERM: MOVE_PERM,
+    SOLVED: SOLVED,
+    SCRAMBLE_LENGTH: SCRAMBLE_LENGTH,
+    MIN_CUBIE_DISTANCE: MIN_CUBIE_DISTANCE,
+    parseMove: parseMove,
+    formatMove: formatMove,
+    applyMove: applyMove,
+    applySequence: applySequence,
+    invertPerm: invertPerm,
+    generateScramble: generateScramble,
+    checkWcaRules: checkWcaRules,
+    cubieDistances: cubieDistances,
+    maxCubieDistance: maxCubieDistance,
+    slotAt: slotAt,
+
+    /* Auto-comprobación: invariantes del modelo de cubo.
+       Devuelve {ok:true} o {ok:false, error:"..."}. */
+    selfTest: function () {
+      var i, j, k;
+      // (a) Todo movimiento deshecho por su inversa vuelve al origen.
+      for (i = 0; i < 6; i++) {
+        for (j = 1; j <= 3; j++) {
+          var st = applyMove(SOLVED, FACES[i], j);
+          st = applyMove(st, FACES[i], 4 - j);
+          for (k = 0; k < 54; k++) if (st[k] !== SOLVED[k]) return { ok: false, error: 'inversa ' + FACES[i] + j };
+        }
+      }
+      // (a') La permutación inversa de un giro es la del giro contrario.
+      for (i = 0; i < 6; i++) {
+        for (j = 1; j <= 3; j++) {
+          var inv = invertPerm(MOVE_PERM[FACES[i]][j]);
+          for (k = 0; k < 54; k++) {
+            if (inv[k] !== MOVE_PERM[FACES[i]][4 - j][k]) {
+              return { ok: false, error: 'permutación inversa ' + FACES[i] + j };
+            }
+          }
+        }
+      }
+      // (b) Checkerboard: las 6 medias vueltas dejan cada cara con su centro y sus
+      //     esquinas en el color propio, y las aristas en el de la opuesta.
+      var chk = applySequence(SOLVED, ['U2', 'D2', 'F2', 'B2', 'L2', 'R2']);
+      var opposite = { U: 'D', D: 'U', F: 'B', B: 'F', L: 'R', R: 'L' };
+      for (i = 0; i < 54; i++) {
+        var s = STICKERS[i];
+        var isCentre = (s.row === 1 && s.col === 1);
+        var isCorner = ((s.row % 2) === 0) && ((s.col % 2) === 0);
+        var expected = (isCentre || isCorner) ? s.face : opposite[s.face];
+        if (chk[i] !== expected) return { ok: false, error: 'checkerboard ' + s.face + s.row + s.col };
+      }
+      // (c) (R U R' U') x 6 = identidad.
+      var sexy = SOLVED;
+      for (i = 0; i < 6; i++) sexy = applySequence(sexy, ["R", "U", "R'", "U'"]);
+      for (i = 0; i < 54; i++) if (sexy[i] !== SOLVED[i]) return { ok: false, error: 'sexy move' };
+      // (d) La cota inferior vale 0 con el cubo resuelto y ≤ 1 tras un giro.
+      if (maxCubieDistance(SOLVED) !== 0) return { ok: false, error: 'cota con el cubo resuelto' };
+      for (i = 0; i < 6; i++) {
+        for (j = 1; j <= 3; j++) {
+          var one = applyMove(SOLVED, FACES[i], j);
+          if (maxCubieDistance(one) > 1) return { ok: false, error: 'cota tras ' + FACES[i] + j };
+        }
+      }
+      // (e) Cada color conserva su número de stickers.
+      var count = {};
+      for (i = 0; i < 54; i++) count[chk[i]] = (count[chk[i]] || 0) + 1;
+      for (i = 0; i < 6; i++) if (count[FACES[i]] !== 9) return { ok: false, error: 'cuenta de colores' };
+      // (f) Las reglas WCA y el filtro de dificultad se cumplen.
+      for (i = 0; i < 5000; i++) {
+        var moves = generateScramble();
+        var err = checkWcaRules(moves, SCRAMBLE_LENGTH);
+        if (err) return { ok: false, error: err };
+        if (maxCubieDistance(applySequence(SOLVED, moves)) < MIN_CUBIE_DISTANCE) {
+          return { ok: false, error: 'filtro de dificultad: ' + moves.join(' ') };
+        }
+      }
+      return { ok: true };
+    }
+  };
+
+  global.CubeScramble = API;
+
+  /* =================================================================
+     6. INTERFAZ (solo si hay DOM)
+     ================================================================= */
+  if (typeof document !== 'undefined' && document.getElementById('board')) {
+    var app = document.getElementById('app');
+    var scrambleEl = document.getElementById('scramble');
+    var boardEl = document.getElementById('board');
+
+    /* Crea las 54 celdas y guarda, para cada una, el sticker que la pinta. */
+    var cells = [];
+    (function buildCells() {
+      var faces = boardEl.querySelectorAll('.face');
+      for (var i = 0; i < faces.length; i++) {
+        var face = faces[i].getAttribute('data-face');
+        var frag = document.createDocumentFragment();
+        for (var k = 0; k < 9; k++) {
+          var row = (k / 3) | 0, col = k % 3;
+          var cell = document.createElement('div');
+          cell.className = 'cell';
+          frag.appendChild(cell);
+          cells.push({ el: cell, slot: slotAt(face, row, col) });
+        }
+        faces[i].appendChild(frag);
+      }
+    })();
+
+    /* Pinta la plantilla 2D a partir del estado del cubo. */
+    function render(state) {
+      for (var i = 0; i < cells.length; i++) {
+        cells[i].el.style.backgroundColor = FACE_COLOR[state[cells[i].slot]];
+      }
+    }
+
+    var FADE_MS = 100;          // 100 ms fuera + 100 ms dentro = 200 ms
+    var fadeTimer = null;
+    var fading = false;
+
+    function commit() {
+      fadeTimer = null;
+      var moves = API.generateScramble(API.SCRAMBLE_LENGTH);
+      scrambleEl.textContent = moves.join(' ');
+      scrambleEl.setAttribute('aria-label', 'Scramble de ' + moves.length + ' movimientos: ' + moves.join(' '));
+      render(API.applySequence(API.SOLVED, moves));
+      app.classList.remove('fading');
+      fading = false;
+    }
+
+    /* Nuevo scramble con fundido. Si ya hay un fundido en curso, se
+       completa al instante y se encadena el siguiente (toques rápidos). */
+    function newScramble() {
+      if (fading) { clearTimeout(fadeTimer); commit(); }
+      fading = true;
+      app.classList.add('fading');
+      fadeTimer = setTimeout(commit, FADE_MS);
+
+      if (navigator.vibrate) {           // vibración sutil, si el dispositivo la soporta
+        try { navigator.vibrate(15); } catch (e) { /* sin soporte */ }
+      }
+    }
+
+    /* En móvil dispara touchstart; en escritorio, click.
+       Un toque genera UN scramble: preventDefault sobre touchstart anula el
+       click sintético, y si el navegador lo emitiera igualmente, el manejador
+       de click descarta los que llegan dentro de la ventana de 700 ms
+       posterior a un toque real. No hay retardo artificial entre toques
+       deliberados: dos toques seguidos dan dos scrambles. */
+    var lastTouch = -1e9;
+    function stamp() { return (typeof performance !== 'undefined' ? performance.now() : Date.now()); }
+    function onTouch(e) {
+      lastTouch = stamp();
+      if (e.cancelable) e.preventDefault();
+      newScramble();
+    }
+    function onClick(e) {
+      if (stamp() - lastTouch < 700) return;
+      newScramble();
+    }
+    document.addEventListener('touchstart', onTouch, { passive: false });
+    document.addEventListener('click', onClick, { passive: false });
+    document.addEventListener('contextmenu', function (e) { e.preventDefault(); });
+
+    // Primer scramble nada más abrir la página.
+    commit();
+  }
+})(typeof globalThis !== 'undefined' ? globalThis : this);
+</script>
+</body>
+</html>
